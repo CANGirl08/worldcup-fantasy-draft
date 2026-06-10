@@ -1,4 +1,33 @@
-import { useState, useEffect } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, onSnapshot, setDoc, getDoc } from "firebase/firestore";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyClNKtZiRZ-Ltj58ljJIuF97cKQW2SBbm0",
+  authDomain: "worldcup-2026-16bb4.firebaseapp.com",
+  projectId: "worldcup-2026-16bb4",
+  storageBucket: "worldcup-2026-16bb4.firebasestorage.app",
+  messagingSenderId: "551061340903",
+  appId: "1:551061340903:web:a94a44848f8ac04e509842"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+const SESSION_DOC = "sessions/main";
+
+async function loadFromFirebase() {
+  try {
+    const snap = await getDoc(doc(db, "sessions", "main"));
+    return snap.exists() ? snap.data() : null;
+  } catch { return null; }
+}
+
+async function saveToFirebase(state) {
+  try {
+    await setDoc(doc(db, "sessions", "main"), state);
+  } catch(e) { console.error("Firebase save error:", e); }
+}
+
+import { useState, useEffect, useRef } from "react";
 
 // ─── DATA ────────────────────────────────────────────────────────────────────
 
@@ -297,20 +326,8 @@ function getPermutations(arr) {
   return result;
 }
 
-// ─── STORAGE HELPERS ──────────────────────────────────────────────────────────
-
-const STORAGE_KEY = "wc2026_app_v3";
-
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-
-function saveState(s) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch {}
-}
+// ─── FIREBASE STORAGE ─────────────────────────────────────────────────────────
+// (helpers defined above with initializeApp)
 
 // ─── APP ──────────────────────────────────────────────────────────────────────
 
@@ -327,22 +344,39 @@ export default function App() {
   const [scores, setScores] = useState({}); // { matchId: { home: n, away: n, final: bool } }
   const [scheduleFilter, setScheduleFilter] = useState("All");
 
-  // Load persisted state
+  // Firebase: load state once on mount + subscribe to real-time updates
+  const isMounted = useRef(true);
   useEffect(() => {
-    const s = loadState();
-    if (s) {
-      setPhase(s.phase || "setup");
-      setPlayerNames(s.playerNames || ["Player 1", "Player 2", "Player 3", "Player 4"]);
-      setPlayerPhones(s.playerPhones || ["", "", "", ""]);
-      setPicks(s.picks || []);
-      setCurrentPick(s.currentPick || 0);
-      setScores(s.scores || {});
-      if (s.phase === "live") setTab("Dashboard");
-    }
+    // Initial load
+    loadFromFirebase().then(s => {
+      if (s && isMounted.current) {
+        setPhase(s.phase || "setup");
+        setPlayerNames(s.playerNames || ["Player 1", "Player 2", "Player 3", "Player 4"]);
+        setPlayerPhones(s.playerPhones || ["", "", "", ""]);
+        setPicks(s.picks || []);
+        setCurrentPick(s.currentPick || 0);
+        setScores(s.scores || {});
+        if (s.phase === "live") setTab("Dashboard");
+      }
+    });
+    // Real-time listener
+    const unsub = onSnapshot(doc(db, "sessions", "main"), (snap) => {
+      if (snap.exists() && isMounted.current) {
+        const s = snap.data();
+        setPhase(p => s.phase || p);
+        setPlayerNames(p => s.playerNames || p);
+        setPlayerPhones(p => s.playerPhones || p);
+        setPicks(p => s.picks || p);
+        setCurrentPick(p => s.currentPick !== undefined ? s.currentPick : p);
+        setScores(p => s.scores || p);
+      }
+    });
+    return () => { isMounted.current = false; unsub(); };
   }, []);
 
+  // Save to Firebase whenever state changes
   useEffect(() => {
-    saveState({ phase, playerNames, playerPhones, picks, currentPick, scores });
+    saveToFirebase({ phase, playerNames, playerPhones, picks, currentPick, scores });
   }, [phase, playerNames, playerPhones, picks, currentPick, scores]);
 
   // ─ derived ─
@@ -429,7 +463,7 @@ export default function App() {
       setTimeout(() => setConfirmReset(false), 4000);
       return;
     }
-    try { localStorage.removeItem(STORAGE_KEY); } catch {}
+    saveToFirebase({ phase: "setup", playerNames: ["Player 1","Player 2","Player 3","Player 4"], playerPhones: ["","","",""], picks: [], currentPick: 0, scores: {} });
     setPhase("setup");
     setPlayerNames(["Player 1", "Player 2", "Player 3", "Player 4"]);
     setPlayerPhones(["", "", "", ""]);
